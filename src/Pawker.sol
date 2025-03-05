@@ -8,11 +8,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 
 contract Pawker is ERC721, ERC721URIStorage, Ownable {
-    string constant baseURI;
+    string private baseURI;
     // Constructor to initialize the contract with token details, base uri and owner
-    constructor(address _owner, address _tokenAddress, string memory _baseURI) ERC721("Pawker", "PAW") Ownable(_owner) {
+    constructor(address _owner, string memory _baseURI) ERC721("Pawker", "PAW") Ownable(_owner) {
         baseURI = _baseURI;
-        token_address = _tokenAddress;
     }
 
     enum Status {
@@ -22,13 +21,13 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
         COMPLETED
     }
 
-    struct Tournanment {
+    struct Tournament {
         address host;
+        address diamond_address;
         address[] winners;
         uint256 initialize_amount;
         uint256 host_fee_amount;
         uint256 start_time;
-        uint256 diamond_address;
         uint256 min_initialize_amount;
         uint256 ticket_price;
         uint256 system_fee;
@@ -37,7 +36,7 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
     }
 
     function checkFund(address _address, address _tokenAddress, uint256 _tokenThresh) internal view returns (bool) {
-        uint256 availableToken = IERC(_tokenAddress).allowance(_address, address(this));
+        uint256 availableToken = IERC20(_tokenAddress).allowance(_address, address(this));
 
         if (availableToken < _tokenThresh) {
             return false;
@@ -46,18 +45,7 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
         return true;
     }
 
-    function setWhileList(address _whileList) external onlyOwner {
-        require(_whileList != address(0), "Invalid address");
-
-        isWhiteList[_whileList] = true;
-    }
-
-    modifier tournamentExists(uint256 _tournament_id) {
-        require(_tournament_id < tournaments.length, "Invalid tournament id");
-        _;  
-    }
-
-    Tournanment[] public tournaments;
+    Tournament[] public tournaments;
     
     mapping(uint256 => address[]) public tournament_participants;
 
@@ -67,11 +55,11 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
 
     event CreateTournament(
         address host, 
+        address diamond_address,
         address[] winners,
         uint256 initialize_amount,
         uint256 host_fee_amount,
         uint256 start_time,
-        uint256 diamond_address,
         uint256 min_initialize_amount,
         uint256 ticket_price,
         uint256 system_fee,
@@ -85,30 +73,48 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
     event FinishTournament(uint256 _tournament_id);
     event ClaimReward(uint256 _tournament_id);
     event ClaimTicketRefund(uint256 nft_id , uint256 _tournament_id);
+    event Received(address sender, uint256 amount, string message);
 
-    function createTournament(uint256[7] memory _fee_info, uint256[] memory _reward_config) external isWhiteList(msg.sender) {
-        bool isValidFund = checkFund(msg.sender, _fee_info[3], _fee_info[4]);
+        function setWhileList(address _whileList) external onlyOwner {
+        require(_whileList != address(0), "Invalid address");
+
+        isWhiteList[_whileList] = true;
+    }
+
+    modifier tournamentExists(uint256 _tournament_id) {
+        require(_tournament_id < tournaments.length, "Invalid tournament id");
+        _;  
+    }
+
+    modifier isInWhitelist(address _address) {
+        require(isWhiteList[_address], "Invalid address");
+        _;
+    }
+
+    function createTournament(address token_address, uint256[6] memory _fee_info, uint256[] memory _reward_config) external isInWhitelist(msg.sender) {
+        bool isValidFund = checkFund(msg.sender, token_address, _fee_info[4]);
 
         require(isValidFund, "Insufficient allowance funds");
 
         tournaments.push(Tournament({
             host: msg.sender,
+            diamond_address: token_address,
             winners: new address[](0),
             initialize_amount: _fee_info[0],
             host_fee_amount: _fee_info[1],
             start_time: _fee_info[2] + block.timestamp,
-            diamond_address: _fee_info[3],
-            min_initialize_amount: _fee_info[4],
-            ticket_price: _fee_info[5],
-            system_fee: _fee_info[6],
+            min_initialize_amount: _fee_info[3],
+            ticket_price: _fee_info[4],
+            system_fee: _fee_info[5],
             reward_config: _reward_config,
             status: Status.CREATED
         }));       
 
-        IERC20(_fee_info[3]).transferFrom(msg.sender, address(this), _fee_info[4]);
+        IERC20(token_address).transferFrom(msg.sender, address(this), _fee_info[4]);
 
         emit CreateTournament(
             msg.sender,
+            token_address,
             new address[](0),
             _fee_info[0],
             _fee_info[1],
@@ -116,13 +122,12 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
             _fee_info[3],
             _fee_info[4],
             _fee_info[5],
-            _fee_info[6],
             _reward_config,
             Status.CREATED
         );
     }
 
-    function buyTicket(uint256 _tournament_id) external tournamentExists(_tournament_id) {
+    function buyTicket(uint256 _tournament_id) external payable tournamentExists(_tournament_id) {
         Tournament storage tournament = tournaments[_tournament_id];
         bool isValidFund = checkFund(msg.sender, tournament.diamond_address, tournament.ticket_price);
 
@@ -151,7 +156,7 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
 
         IERC20(tournament.diamond_address).transferFrom(msg.sender, address(this), _participant_fee);
 
-        _burn(token_id);
+        _burn(_token_id);
 
         emit JoinTournament(_tournament_id, _participant_fee, _token_id);
     }
@@ -188,23 +193,23 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
          emit FinishTournament(_tournament_id);
     }
 
-    function claimReward(uint256 _tournament_id) external tournamentExists(_tournament_id) {
-        require(tournaments[_tournament_id].status == Status.COMPLETED, "Tournament not completed");
+    // function claimReward(uint256 _tournament_id) external tournamentExists(_tournament_id) {
+    //     require(tournaments[_tournament_id].status == Status.COMPLETED, "Tournament not completed");
 
-        Tournament storage tournament = tournaments[_tournament_id];
-        uint256 winners_amount = ournament.winners.length;
+    //     Tournament storage tournament = tournaments[_tournament_id];
+    //     uint256 winners_amount = tournament.winners.length();
 
-        for (uint256 i = 0; i < winners_amount;) {
-            uint256 reward = tournament.reward_config[i];
-            if (reward != 0 && tournament.winners[i] == msg.sender) {
-                IERC20(tournament.diamond_address).transfer(msg.sender, reward);
+    //     for (uint256 i = 0; i < winners_amount;) {
+    //         uint256 reward = tournament.reward_config[i];
+    //         if (reward != 0 && tournament.winners[i] == msg.sender) {
+    //             IERC20(tournament.diamond_address).transfer(msg.sender, reward);
                 
-                break;
-            }
-        }
+    //             break;
+    //         }
+    //     }
 
-        emit ClaimReward(_tournament_id);
-    }
+    //     emit ClaimReward(_tournament_id);
+    // }
 
     function claimTicketRefund(uint256 nft_id , uint256 _tournament_id) external tournamentExists(_tournament_id) {
         require(ownerOf(nft_id) == msg.sender, "Invalid owner");
@@ -215,5 +220,33 @@ contract Pawker is ERC721, ERC721URIStorage, Ownable {
         _burn(nft_id);
 
         emit ClaimTicketRefund(nft_id, _tournament_id);
+    }
+
+    // Function called when receiving BERA **without** data
+    receive() external payable {
+        emit Received(msg.sender, msg.value, "Receive function called");
+    }
+
+    // Function called when receiving BERA **with** data or for unknown functions
+    fallback() external payable {
+        emit Received(msg.sender, msg.value, "Fallback function called");
+    }
+
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
     }
 }
